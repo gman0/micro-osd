@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "microosd.fullname" . }}
+  labels:
+    {{- include "microosd.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "microosd.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "microosd.fullname" . }}
+  labels:
+    {{- include "microosd.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "microosd.selectorLabels" . | nindent 6 }}
+  serviceName: {{ include "microosd.fullname" . }}
+  replicas: 1
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "microosd.selectorLabels" . | nindent 8 }}
+    spec:
+      hostNetwork: true
+      {{- with .Values.cephConfRootVolumeSpec }}
+      volumes:
+      - name: ceph-conf-root
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      - name: keyrings
+        secret:
+          secretName: {{ include "microosd.fullname" . }}-keyrings
+      {{- if .Values.cleanCephConfRootVolumeBeforeStartup }}
+      initContainers:
+      - name: clean-ceph-conf-vol
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/bash", "-c", "find /etc/ceph -mindepth 1 -name keyrings -prune -o -exec rm -rf {} +"]
+        volumeMounts:
+        - name: ceph-conf-root
+          mountPath: /etc/ceph
+      {{- end }}
+      containers:
+      - name: microosd
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+          - name: CEPH_CONF_ROOT
+            value: /etc/ceph
+        {{- if .Values.cephConfRootVolumeSpec }}
+        volumeMounts:
+        - name: ceph-conf-root
+          mountPath: /etc/ceph
+        {{- end }}
+        - name: keyrings
+          mountPath: /etc/ceph/keyrings
+        # startupProbe:
+        #   exec:
+        #     command:
+        #       - stat
+        #       - /etc/ceph/.ready
+        #   initialDelaySeconds: 5
+        #   periodSeconds: 1
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
