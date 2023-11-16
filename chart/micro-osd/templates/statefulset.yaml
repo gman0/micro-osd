@@ -5,7 +5,10 @@ metadata:
   labels:
     {{- include "microosd.labels" . | nindent 4 }}
 spec:
-  clusterIP: None
+  ports:
+  # Exposes the monitor.
+  - port: 6789
+    targetPort: 6789
   selector:
     {{- include "microosd.selectorLabels" . | nindent 4 }}
 ---
