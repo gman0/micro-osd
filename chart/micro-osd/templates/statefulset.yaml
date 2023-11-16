@@ -39,16 +39,6 @@ spec:
       - name: keyrings
         secret:
           secretName: {{ include "microosd.fullname" . }}-keyrings
-      {{- if .Values.cleanCephConfRootVolumeBeforeStartup }}
-      initContainers:
-      - name: clean-ceph-conf-vol
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-        imagePullPolicy: {{ .Values.image.pullPolicy }}
-        command: ["/bin/bash", "-c", "find /etc/ceph -mindepth 1 -name keyrings -prune -o -exec rm -rf {} +"]
-        volumeMounts:
-        - name: ceph-conf-root
-          mountPath: /etc/ceph
-      {{- end }}
       containers:
       - name: microosd
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -68,7 +58,7 @@ spec:
         #     command:
         #       - stat
         #       - /etc/ceph/.ready
-        #   initialDelaySeconds: 5
+        #   initialDelaySeconds: 50
         #   periodSeconds: 1
       {{- with .Values.nodeSelector }}
       nodeSelector:

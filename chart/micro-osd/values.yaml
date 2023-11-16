@@ -8,8 +8,6 @@ cephConfRootVolumeSpec:
   #   path: /tmp/microosd-ceph-conf
   #   type: DirectoryOrCreate
 
-cleanCephConfRootVolumeBeforeStartup: false
-
 extraKeyrings:
   - name: client.admin
     values:
@@ -20,7 +18,7 @@ extraKeyrings:
       "caps osd": '"allow *"'
 
 image:
-  repository: microosd
+  repository: registry.cern.ch/rvasek/micro-osd
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: "latest"
