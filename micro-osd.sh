@@ -30,15 +30,28 @@ MDS_DATA="${DIR}/mds"
 MOUNTPT="${MDS_DATA}/mnt"
 OSD_DATA="${DIR}/osd"
 RGW_DATA="${DIR}/radosgw"
-mkdir "${LOG_DIR}" "${MON_DATA}" "${OSD_DATA}" "${MDS_DATA}" "${MOUNTPT}" "${RGW_DATA}"
+mkdir -p "${LOG_DIR}" "${MON_DATA}" "${OSD_DATA}" "${MDS_DATA}" "${MOUNTPT}" "${RGW_DATA}"
 MDS_NAME="Z"
+FS_NAME="cephfs"
+ALT_MDS_NAME="Y"
+ALT_FS_NAME="altfs"
 MON_NAME="a"
 MGR_NAME="x"
 MIRROR_ID="m"
 RGW_ID="r"
-S3_ACCESS_KEY=2262XNX11FZRR44XWIRD
-S3_SECRET_KEY=rmtuS1Uj1bIC08QFYGW18GfSHAbkPqdsuYynNudw
 
+# Following are examples for S3 credentials taken from official AWS docs:
+# https://docs.aws.amazon.com/IAM/latest/UserGuide/security-creds.html#access-keys-and-secret-access-keys
+# These does not represent real/valid credentials for AWS in any form.
+# They are exclusively used for testing S3 compatible API from Ceph RGW.
+S3_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE
+S3_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# Pass environment variables to override these.
+CEPH_ADDR="${CEPH_ADDR:-$HOSTNAME}"
+CEPH_AUTH_METHOD="${CEPHX_AUTH_ENABLED:-cephx}"
+
+HOST_IP=$(getent ahostsv4 "${HOSTNAME}" | grep STREAM | head -n 1 | awk '{print $1}')
 FSID="$(uuidgen)"
 export CEPH_CONF=${DIR}/ceph.conf
 
@@ -49,25 +62,32 @@ generate_ceph_conf() {
 fsid = ${FSID}
 osd crush chooseleaf type = 0
 run dir = ${DIR}/run
-auth cluster required = none
-auth service required = none
-auth client required = none
+auth cluster required = ${CEPH_AUTH_METHOD}
+auth service required = ${CEPH_AUTH_METHOD}
+auth client required = ${CEPH_AUTH_METHOD}
 osd pool default size = 1
 mon host = ${HOSTNAME}
 
 [mds.${MDS_NAME}]
 host = ${HOSTNAME}
+chdir = ""
+log file = ${LOG_DIR}/mds.log
+mds data = ${MDS_DATA}
 
 [mon.${MON_NAME}]
+keyring = /etc/ceph/keyring
 log file = ${LOG_DIR}/mon.log
 chdir = ""
 mon cluster log file = ${LOG_DIR}/mon-cluster.log
 mon data = ${MON_DATA}
 mon data avail crit = 0
-mon addr = ${HOSTNAME}
+mon addr = ${HOST_IP}:3300
 mon allow pool delete = true
 
+auth_allow_insecure_global_id_reclaim = false
+
 [osd.0]
+keyring = /etc/ceph/keyring
 log file = ${LOG_DIR}/osd.log
 chdir = ""
 osd data = ${OSD_DATA}
@@ -78,6 +98,7 @@ osd class load list = *
 osd class default list = *
 
 [mgr.${MGR_NAME}]
+keyring = /etc/ceph/keyring
 log_file = ${LOG_DIR}/mgr.log
 
 [client.rgw.${RGW_ID}]
@@ -94,7 +115,8 @@ EOF
 }
 
 launch_mon() {
-    ceph-mon --id ${MON_NAME} --mkfs --keyring /dev/null
+    # ceph-mon --id ${MON_NAME} --mkfs --keyring /dev/null
+    ceph-mon --id ${MON_NAME} --mkfs --keyring /etc/ceph/keyring
     touch "${MON_DATA}/keyring"
     ceph-mon --id ${MON_NAME}
 }
@@ -102,23 +124,38 @@ launch_mon() {
 launch_osd() {
     OSD_ID=$(ceph osd create)
     ceph osd crush add "osd.${OSD_ID}" 1 root=default
-    ceph-osd --id "${OSD_ID}" --mkjournal --mkfs
-    ceph-osd --id "${OSD_ID}" || ceph-osd --id "${OSD_ID}" || ceph-osd --id "${OSD_ID}"
+    ceph-osd --id "${OSD_ID}" --mkjournal --mkfs --keyring /etc/ceph/keyring
+    ceph-osd --id "${OSD_ID}" --keyring /etc/ceph/keyring || ceph-osd --id "${OSD_ID}" --keyring /etc/ceph/keyring || ceph-osd --id "${OSD_ID}" --keyring /etc/ceph/keyring
+}
+
+launch_mds_server() {
+    local mds="$1"
+    local fs="$2"
+
+    # mkdir -p "${MDS_DATA}/ceph-${mds}"
+    # ceph auth get-or-create "mds.${mds}" mon 'profile mds' mgr 'profile mds' mds 'allow *' osd 'allow *' >> "${MDS_DATA}/ceph-${mds}/keyring"
+    ceph auth get-or-create "mds.${mds}" mon 'profile mds' mgr 'profile mds' mds 'allow *' osd 'allow *' >> "${MDS_DATA}/keyring"
+    ceph osd pool create "${fs}_data" 8
+    ceph osd pool create "${fs}_metadata" 8
+    ceph fs new "${fs}" "${fs}_metadata" "${fs}_data"
+    ceph fs ls
+    ceph-mds -i "${mds}"
+    ceph status
+    while ! ceph mds stat | grep -q "up:active"; do sleep 1; done
+
 }
 
 launch_mds() {
-    ceph auth get-or-create mds.${MDS_NAME} mon 'profile mds' mgr 'profile mds' mds 'allow *' osd 'allow *' > "${MDS_DATA}/keyring"
-    ceph osd pool create cephfs_data 8
-    ceph osd pool create cephfs_metadata 8
-    ceph fs new cephfs cephfs_metadata cephfs_data
-    ceph fs ls
-    ceph-mds -i ${MDS_NAME}
-    ceph status
-    while ! ceph mds stat | grep -q "up:active"; do sleep 1; done
+    launch_mds_server "${MDS_NAME}" "${FS_NAME}"
+}
+
+launch_mds2() {
+    launch_mds_server "${ALT_MDS_NAME}" "${ALT_FS_NAME}"
+    echo "${ALT_FS_NAME}" > "${DIR}/altfs.txt"
 }
 
 launch_mgr() {
-    ceph-mgr --id ${MGR_NAME}
+    ceph-mgr --id ${MGR_NAME} --keyring /etc/ceph/keyring
 }
 
 launch_rbd_mirror() {
@@ -147,6 +184,10 @@ launch_radosgw() {
     radosgw-admin user create --uid admin --display-name "Admin User" --caps "buckets=*;users=*;usage=read;metadata=read" --access-key="$S3_ACCESS_KEY" --secret-key="$S3_SECRET_KEY"
 }
 
+launch_radosgw2() {
+    radosgw-admin caps add --uid=admin --caps="info=read"
+}
+
 selftest() {
     ceph --version
     ceph status
@@ -160,17 +201,20 @@ selftest() {
     rm "${temp_file}"
 }
 
-FEATURESET="${CEPH_FEATURESET-}"
-if [ -z "$FEATURESET" ] ; then
-    case "${CEPH_VERSION-}" in
-        nautilus|octopus)
-            FEATURESET="mon osd mgr mds rbd-mirror rgw selftest"
-        ;;
-        *)
-            FEATURESET="mon osd mgr mds rbd-mirror cephfs-mirror rgw selftest"
-        ;;
-    esac
-fi
+FEATURESET="${CEPH_FEATURESET:-mon mgr osd mds rgw selftest}"
+# if [ -z "$FEATURESET" ] ; then
+#     case "${CEPH_VERSION-}" in
+#         nautilus|octopus)
+#             FEATURESET="mon osd mgr mds rbd-mirror rgw selftest"
+#         ;;
+#         pacific)
+#             FEATURESET="mon osd mgr mds mds2 rbd-mirror cephfs-mirror rgw selftest"
+#         ;;
+#         *)
+#             FEATURESET="mon osd mgr mds mds2 rbd-mirror cephfs-mirror rgw rgw2 selftest"
+#         ;;
+#     esac
+# fi
 
 generate_ceph_conf
 for fname in ${FEATURESET} ; do
@@ -178,10 +222,12 @@ for fname in ${FEATURESET} ; do
         mon) launch_mon ;;
         osd) launch_osd ;;
         mds) launch_mds ;;
+        mds2) launch_mds2 ;;
         mgr) launch_mgr ;;
         rbd-mirror) launch_rbd_mirror ;;
         cephfs-mirror) launch_cephfs_mirror ;;
         rgw|radosgw) launch_radosgw ;;
+        rgw2|radosgw2) launch_radosgw2 ;;
         selftest) selftest ;;
         *)
             echo "Invalid feature: ${fname}"
